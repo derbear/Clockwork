@@ -14,6 +14,10 @@ import com.google.android.gms.wearable.DataEvent;
 import com.google.android.gms.wearable.DataEventBuffer;
 import com.google.android.gms.wearable.DataItem;
 import com.google.android.gms.wearable.DataMapItem;
+import com.google.android.gms.wearable.MessageApi;
+import com.google.android.gms.wearable.MessageEvent;
+import com.google.android.gms.wearable.Node;
+import com.google.android.gms.wearable.NodeApi;
 import com.google.android.gms.wearable.PutDataRequest;
 import com.google.android.gms.wearable.Wearable;
 
@@ -29,7 +33,7 @@ import edu.berkeley.eecs.shared.ProtocolConstants;
 
 
 public class PhoneActivity extends ActionBarActivity implements
-        DataApi.DataListener,
+        MessageApi.MessageListener,
         GoogleApiClient.ConnectionCallbacks,
         GoogleApiClient.OnConnectionFailedListener {
 
@@ -42,6 +46,8 @@ public class PhoneActivity extends ActionBarActivity implements
     private ScheduledThreadPoolExecutor workers;
     private ByteBuffer packetBuffer;
 
+    private Node watchNode;
+
     private List<PingPacket> pings;
 
     private long baseline = SystemClock.elapsedRealtime();
@@ -49,21 +55,32 @@ public class PhoneActivity extends ActionBarActivity implements
     private final Runnable pingProcedure = new Runnable() {
         @Override
         public void run() {
-            synchronized (packetBuffer) {
+            if (watchNode == null) {
+                List<Node> nodes = Wearable.NodeApi.getConnectedNodes(googleApiClient).await().getNodes();
+                for (Node node: nodes) {
+                    if (node.isNearby()) {
+                        watchNode = node;
+                    }
+                }
+            }
 
-                // prepare packet
-                PutDataRequest request = PutDataRequest.create(ProtocolConstants.PING_PATH);
-                packetBuffer.clear();
-                packetBuffer.putInt(packetNumber);
-                packetNumber += 2; // 2 for future "pongs"
-                long send = SystemClock.elapsedRealtime() - baseline;
-                packetBuffer.putLong(send);
-                // packetBuffer.putLong(-1);
-                // packetBuffer.putLong(-1);
+            if (watchNode != null) {
+                synchronized (packetBuffer) {
+                    // prepare packet
+                    packetBuffer.clear();
+                    packetBuffer.putInt(packetNumber);
+                    packetNumber += 2; // 2 for future "pongs"
+                    long send = SystemClock.elapsedRealtime() - baseline;
+                    packetBuffer.putLong(send);
+                    // packetBuffer.putLong(-1);
+                    // packetBuffer.putLong(-1);
 
-                // send packet
-                request.setData(packetBuffer.array());
-                Wearable.DataApi.putDataItem(googleApiClient, request);
+                    // send packet
+                    MessageApi.SendMessageResult result =
+                            Wearable.MessageApi.sendMessage(googleApiClient, watchNode.getId(),
+                            ProtocolConstants.PING_PATH, packetBuffer.array()).await();
+                    // Log.v("PhoneActivity", "node id: " + watchNode.getId());
+                }
             }
         }
     };
@@ -88,17 +105,19 @@ public class PhoneActivity extends ActionBarActivity implements
         super.onResume();
 
         googleApiClient.connect();
-        workers = new ScheduledThreadPoolExecutor(WORKER_THREADS);
-        workers.scheduleWithFixedDelay(pingProcedure, 0, PING_DELAY, TimeUnit.MILLISECONDS);
+
+        watchNode = null;
     }
 
     @Override
     protected void onPause() {
         super.onPause();
 
-        Wearable.DataApi.removeListener(googleApiClient, this);
+        Wearable.MessageApi.removeListener(googleApiClient, this);
         googleApiClient.disconnect();
         workers.shutdown();
+
+        watchNode = null;
     }
 
     @Override
@@ -125,7 +144,10 @@ public class PhoneActivity extends ActionBarActivity implements
 
     @Override
     public void onConnected(Bundle bundle) {
-        Wearable.DataApi.addListener(googleApiClient, this);
+        Wearable.MessageApi.addListener(googleApiClient, this);
+
+        workers = new ScheduledThreadPoolExecutor(WORKER_THREADS);
+        workers.scheduleWithFixedDelay(pingProcedure, 0, PING_DELAY, TimeUnit.MILLISECONDS);
     }
 
     @Override
@@ -139,25 +161,19 @@ public class PhoneActivity extends ActionBarActivity implements
     }
 
     @Override
-    public void onDataChanged(DataEventBuffer dataEventBuffer) {
+    public void onMessageReceived(MessageEvent messageEvent) {
         long received = SystemClock.elapsedRealtime() - baseline;
+        if (messageEvent.getPath().equalsIgnoreCase(ProtocolConstants.PONG_PATH)) {
+            byte[] data = messageEvent.getData();
 
-        for (DataEvent event: dataEventBuffer) {
-            if (event.getType() == DataEvent.TYPE_CHANGED) {
-                DataItem item = event.getDataItem();
-                if (item.getUri().getPath().compareTo(ProtocolConstants.PONG_PATH) == 0) {
-                    byte[] data = item.getData();
+            synchronized (packetBuffer) {
+                packetBuffer.clear();
+                packetBuffer.put(data);
+                packetBuffer.rewind();
 
-                    synchronized (packetBuffer) {
-                        packetBuffer.clear();
-                        packetBuffer.put(data);
-                        packetBuffer.rewind();
-
-                        pings.add(new PingPacket(packetBuffer.getInt(),
-                                packetBuffer.getLong(), packetBuffer.getLong(),
-                                packetBuffer.getLong(), received));
-                    }
-                }
+                pings.add(new PingPacket(packetBuffer.getInt(),
+                        packetBuffer.getLong(), packetBuffer.getLong(),
+                        packetBuffer.getLong(), received));
             }
         }
 

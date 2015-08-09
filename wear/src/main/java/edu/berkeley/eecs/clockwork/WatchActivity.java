@@ -9,10 +9,11 @@ import android.widget.TextView;
 
 import com.google.android.gms.common.ConnectionResult;
 import com.google.android.gms.common.api.GoogleApiClient;
-import com.google.android.gms.wearable.DataApi;
 import com.google.android.gms.wearable.DataEvent;
 import com.google.android.gms.wearable.DataEventBuffer;
 import com.google.android.gms.wearable.DataItem;
+import com.google.android.gms.wearable.MessageApi;
+import com.google.android.gms.wearable.MessageEvent;
 import com.google.android.gms.wearable.PutDataRequest;
 import com.google.android.gms.wearable.Wearable;
 
@@ -21,7 +22,7 @@ import java.nio.ByteBuffer;
 import edu.berkeley.eecs.shared.ProtocolConstants;
 
 public class WatchActivity extends Activity implements
-        DataApi.DataListener,
+        MessageApi.MessageListener,
         GoogleApiClient.ConnectionCallbacks,
         GoogleApiClient.OnConnectionFailedListener {
 
@@ -64,13 +65,13 @@ public class WatchActivity extends Activity implements
     protected void onPause() {
         super.onPause();
 
-        Wearable.DataApi.removeListener(googleApiClient, this);
+        Wearable.MessageApi.removeListener(googleApiClient, this);
         googleApiClient.disconnect();
     }
 
     @Override
     public void onConnected(Bundle bundle) {
-        Wearable.DataApi.addListener(googleApiClient, this);
+        Wearable.MessageApi.addListener(googleApiClient, this);
     }
 
     @Override
@@ -84,33 +85,26 @@ public class WatchActivity extends Activity implements
     }
 
     @Override
-    public void onDataChanged(DataEventBuffer dataEventBuffer) {
+    public void onMessageReceived(MessageEvent messageEvent) {
         long received = SystemClock.elapsedRealtime() - baseline;
 
-        for (DataEvent event: dataEventBuffer) {
-            if (event.getType() == DataEvent.TYPE_CHANGED) {
-                byte[] data = event.getDataItem().getData();
-                DataItem item = event.getDataItem();
-                if (item.getUri().getPath().compareTo(ProtocolConstants.PING_PATH) == 0) {
-                    synchronized (packetBuffer) {
-                        // prepare packet
-                        PutDataRequest request = PutDataRequest.create(ProtocolConstants.PONG_PATH);
+        if (messageEvent.getPath().equalsIgnoreCase(ProtocolConstants.PING_PATH)) {
+            synchronized (packetBuffer) {
+                // read data
+                byte[] data = messageEvent.getData();
+                packetBuffer.clear();
+                packetBuffer.put(data);
+                packetBuffer.rewind();
+                packetBuffer.getInt(); // packet number
+                packetBuffer.getLong(); // request send time
+                packetBuffer.putLong(received);
 
-                        // read data
-                        packetBuffer.clear();
-                        packetBuffer.put(data);
-                        packetBuffer.rewind();
-                        packetBuffer.getInt(); // packet number
-                        packetBuffer.getLong(); // request send time
-                        packetBuffer.putLong(received);
+                // send packet while setting response send time
+                long send = SystemClock.elapsedRealtime() - baseline;
+                packetBuffer.putLong(send);
 
-                        // send packet while setting response send time
-                        long send = SystemClock.elapsedRealtime() - baseline;
-                        packetBuffer.putLong(send);
-                        request.setData(packetBuffer.array());
-                        Wearable.DataApi.putDataItem(googleApiClient, request);
-                    }
-                }
+                Wearable.MessageApi.sendMessage(googleApiClient, messageEvent.getSourceNodeId(),
+                        ProtocolConstants.PONG_PATH, packetBuffer.array());
             }
         }
     }
