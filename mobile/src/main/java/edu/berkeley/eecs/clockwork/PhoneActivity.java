@@ -1,5 +1,14 @@
 package edu.berkeley.eecs.clockwork;
 
+import android.content.ComponentName;
+import android.content.Context;
+import android.content.Intent;
+import android.content.ServiceConnection;
+import android.os.Handler;
+import android.os.IBinder;
+import android.os.Message;
+import android.os.Messenger;
+import android.os.RemoteException;
 import android.os.SystemClock;
 import android.support.v7.app.ActionBarActivity;
 import android.os.Bundle;
@@ -10,85 +19,54 @@ import android.view.View;
 import android.widget.Button;
 import android.widget.TextView;
 
-import com.google.android.gms.common.ConnectionResult;
-import com.google.android.gms.common.api.GoogleApiClient;
-import com.google.android.gms.wearable.DataApi;
-import com.google.android.gms.wearable.DataEvent;
-import com.google.android.gms.wearable.DataEventBuffer;
-import com.google.android.gms.wearable.DataItem;
-import com.google.android.gms.wearable.DataMapItem;
-import com.google.android.gms.wearable.MessageApi;
-import com.google.android.gms.wearable.MessageEvent;
-import com.google.android.gms.wearable.Node;
-import com.google.android.gms.wearable.NodeApi;
-import com.google.android.gms.wearable.PutDataRequest;
-import com.google.android.gms.wearable.Wearable;
 
-import java.nio.ByteBuffer;
-import java.util.ArrayList;
-import java.util.Collections;
-import java.util.List;
-import java.util.concurrent.ScheduledThreadPoolExecutor;
-import java.util.concurrent.TimeUnit;
+public class PhoneActivity extends ActionBarActivity {
 
-import edu.berkeley.eecs.shared.PingPacket;
-import edu.berkeley.eecs.shared.ProtocolConstants;
+    private Messenger service = null;
+    private final Messenger client = new Messenger(new Handler() {
+        @Override
+        public void handleMessage(Message msg) {
+            switch (msg.what) {
+                case ClockworkPingService.POLL_RESPONSE:
+                    final TextView label = ((TextView) findViewById(R.id.label));
 
+                    Bundle data = msg.getData();
+                    final long remote = data.getLong("remote", -1);
+                    final long estimate = data.getLong("estimate", -1);
+                    final long lower = data.getLong("lower", -1);
+                    final long upper = data.getLong("upper", -1);
 
-public class PhoneActivity extends ActionBarActivity implements
-        MessageApi.MessageListener,
-        GoogleApiClient.ConnectionCallbacks,
-        GoogleApiClient.OnConnectionFailedListener {
+                    runOnUiThread(new Runnable() {
+                        @Override
+                        public void run() {
+                            // TODO different text if anything is -1 (i.e. failure)
+                            label.setText("Estimated anchor: " + remote + " @ " + estimate
+                                + ", Error bounds: " + lower + " ... " + upper + " (magnitude "
+                                + (upper - lower) + ")");
+                        }
+                    });
+                    return;
+                default:
+                    super.handleMessage(msg);
+            }
+        }
+    });
 
-    public static final int WORKER_THREADS = 1;
-    public static final int PING_DELAY = 100;
-
-    private long lastResponse = -1;
-    private long lowerGuess = -1;
-    private long upperGuess = -1;
-
-    private int packetNumber = 0;
-
-    private GoogleApiClient googleApiClient;
-    private ScheduledThreadPoolExecutor workers;
-    private ByteBuffer packetBuffer;
-
-    private Node watchNode;
-
-    private List<PingPacket> pings;
+    private boolean serviceBound = false;
 
     private long baseline = SystemClock.elapsedRealtime();
 
-    private final Runnable pingProcedure = new Runnable() {
+    private ServiceConnection serviceConnection = new ServiceConnection() {
         @Override
-        public void run() {
-            if (watchNode == null) {
-                List<Node> nodes = Wearable.NodeApi.getConnectedNodes(googleApiClient).await().getNodes();
-                for (Node node: nodes) {
-                    if (node.isNearby()) {
-                        watchNode = node;
-                    }
-                }
-            }
+        public void onServiceConnected(ComponentName name, IBinder service) {
+            PhoneActivity.this.service = new Messenger(service);
+            serviceBound = true;
+        }
 
-            if (watchNode != null) {
-                synchronized (packetBuffer) {
-                    // prepare packet
-                    packetBuffer.clear();
-                    packetBuffer.putInt(packetNumber);
-                    packetNumber += 2; // 2 for future "pongs"
-                    long send = SystemClock.elapsedRealtime();
-                    packetBuffer.putLong(send);
-                    // packetBuffer.putLong(-1);
-                    // packetBuffer.putLong(-1);
-
-                    // send packet
-                    MessageApi.SendMessageResult result =
-                            Wearable.MessageApi.sendMessage(googleApiClient, watchNode.getId(),
-                            ProtocolConstants.PING_PATH, packetBuffer.array()).await();
-                    // Log.v("PhoneActivity", "node id: " + watchNode.getId());
-                }
-            }
+        @Override
+        public void onServiceDisconnected(ComponentName name) {
+            service = null;
+            serviceBound = false;
         }
     };
 
@@ -97,54 +75,67 @@ public class PhoneActivity extends ActionBarActivity implements
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_phone);
 
-        Button b = ((Button) findViewById(R.id.button));
+        Button pollButton = ((Button) findViewById(R.id.pollButton));
         final TextView label = ((TextView) findViewById(R.id.label));
-        b.setOnClickListener(new View.OnClickListener() {
+        pollButton.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
-                long _lowerGuess = lowerGuess;
-                long _upperGuess = upperGuess;
-                long _lastResponse = lastResponse;
+                if (!serviceBound) {
+                    return;
+                }
 
-                long estimate = (_lowerGuess + _upperGuess) / 2;
-                label.setText("Estimated anchor: " + _lastResponse + " @ " + estimate
-                        + ", Error bounds: " + _lowerGuess + " ... " + _upperGuess + " (magnitude "
-                        + (_upperGuess - _lowerGuess) + ")");
+                // procedure call POLL_SYNC(service)
+                Bundle data = new Bundle();
+                data.putParcelable("client", client);
+                Message m = Message.obtain(null, ClockworkPingService.POLL_SYNC);
+                m.setData(data);
+                try {
+                    service.send(m);
+                    label.setText("Waiting for poll request...");
+                } catch (RemoteException e) {
+                    label.setText("Error: ping poll request failed");
+                    Log.e("PhoneActivity", "poll request error", e);
+                    return;
+                }
             }
         });
 
-        googleApiClient = new GoogleApiClient.Builder(this)
-                .addConnectionCallbacks(this)
-                .addOnConnectionFailedListener(this)
-                .addApi(Wearable.API)
-                .build();
+        Button syncButton = ((Button) findViewById(R.id.resyncButton));
+        syncButton.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                if (!serviceBound) {
+                    return;
+                }
 
-        packetBuffer = ByteBuffer.allocate(ProtocolConstants.PING_SIZE);
-        pings = new ArrayList<>();
+                Message m = Message.obtain(null, ClockworkPingService.REQUEST_SYNC);
+                try {
+                    service.send(m);
+                    label.setText("Sent ping synchronization request");
+                } catch (RemoteException e) {
+                    label.setText("Error: ping synchronization request failed");
+                    Log.e("PhoneActivity", "synchronization request error", e);
+                }
+            }
+        });
     }
 
     @Override
-    protected void onResume() {
-        super.onResume();
+    protected void onStart() {
+        super.onStart();
 
-        googleApiClient.connect();
-
-        lastResponse = -1;
-        lowerGuess = -1;
-        upperGuess = -1;
-
-        watchNode = null;
+        bindService(new Intent(this, ClockworkPingService.class), serviceConnection,
+                Context.BIND_AUTO_CREATE);
     }
 
     @Override
-    protected void onPause() {
-        super.onPause();
+    protected void onStop() {
+        super.onStop();
 
-        Wearable.MessageApi.removeListener(googleApiClient, this);
-        googleApiClient.disconnect();
-        workers.shutdown();
-
-        watchNode = null;
+        if (serviceBound) {
+            unbindService(serviceConnection);
+            serviceBound = false;
+        }
     }
 
     @Override
@@ -167,66 +158,5 @@ public class PhoneActivity extends ActionBarActivity implements
         }
 
         return super.onOptionsItemSelected(item);
-    }
-
-    @Override
-    public void onConnected(Bundle bundle) {
-        Wearable.MessageApi.addListener(googleApiClient, this);
-
-        workers = new ScheduledThreadPoolExecutor(WORKER_THREADS);
-        workers.scheduleWithFixedDelay(pingProcedure, 0, PING_DELAY, TimeUnit.MILLISECONDS);
-    }
-
-    @Override
-    public void onConnectionSuspended(int i) {
-
-    }
-
-    @Override
-    public void onConnectionFailed(ConnectionResult connectionResult) {
-
-    }
-
-    @Override
-    public void onMessageReceived(MessageEvent messageEvent) {
-        long received = SystemClock.elapsedRealtime();
-        if (messageEvent.getPath().equalsIgnoreCase(ProtocolConstants.PONG_PATH)) {
-            byte[] data = messageEvent.getData();
-
-            synchronized (packetBuffer) {
-                packetBuffer.clear();
-                packetBuffer.put(data);
-                packetBuffer.rewind();
-
-                int number = packetBuffer.getInt();
-                long reqSend = packetBuffer.getLong();
-                long reqRecv = packetBuffer.getLong();
-                long resSend = packetBuffer.getLong();
-                long resRecv = received;
-
-                // adjust request send time
-                long lower = reqSend + (resSend - reqRecv);
-                long upper = resRecv;
-
-                if (lastResponse == -1) {
-                    lastResponse = resSend;
-                    lowerGuess = lower;
-                    upperGuess = upper;
-                } else {
-                    // assume no skew
-                    long delta = resSend - lastResponse;
-                    lastResponse = resSend;
-                    lowerGuess += delta;
-                    upperGuess += delta;
-
-                    if (lower > lowerGuess) {
-                        lowerGuess = lower;
-                    }
-                    if (upper < upperGuess) {
-                        upperGuess = upper;
-                    }
-                }
-            }
-        }
     }
 }

@@ -8,9 +8,9 @@
     <Button
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
-        android:text="Refresh"
-        android:id="@+id/button"
-        android:layout_alignParentTop="true"
+        android:text="Poll process"
+        android:id="@+id/pollButton"
+        android:layout_below="@+id/resyncButton"
         android:layout_alignParentLeft="true"
         android:layout_alignParentStart="true" />
 
@@ -18,9 +18,18 @@
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
         android:textAppearance="?android:attr/textAppearanceLarge"
-        android:text="Hit &apos;REFRESH&apos;"
+        android:text="Hit &apos;RESYNC PROCESS&apos;"
         android:id="@+id/label"
-        android:layout_below="@+id/button"
+        android:layout_below="@+id/pollButton"
+        android:layout_alignParentLeft="true"
+        android:layout_alignParentStart="true" />
+
+    <Button
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="Resync process"
+        android:id="@+id/resyncButton"
+        android:layout_alignParentTop="true"
         android:layout_alignParentLeft="true"
         android:layout_alignParentStart="true" />
 
