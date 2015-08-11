@@ -6,6 +6,9 @@ import android.os.Bundle;
 import android.util.Log;
 import android.view.Menu;
 import android.view.MenuItem;
+import android.view.View;
+import android.widget.Button;
+import android.widget.TextView;
 
 import com.google.android.gms.common.ConnectionResult;
 import com.google.android.gms.common.api.GoogleApiClient;
@@ -40,6 +43,10 @@ public class PhoneActivity extends ActionBarActivity implements
     public static final int WORKER_THREADS = 1;
     public static final int PING_DELAY = 100;
 
+    private long lastResponse = -1;
+    private long lowerGuess = -1;
+    private long upperGuess = -1;
+
     private int packetNumber = 0;
 
     private GoogleApiClient googleApiClient;
@@ -70,7 +77,7 @@ public class PhoneActivity extends ActionBarActivity implements
                     packetBuffer.clear();
                     packetBuffer.putInt(packetNumber);
                     packetNumber += 2; // 2 for future "pongs"
-                    long send = SystemClock.elapsedRealtime() - baseline;
+                    long send = SystemClock.elapsedRealtime();
                     packetBuffer.putLong(send);
                     // packetBuffer.putLong(-1);
                     // packetBuffer.putLong(-1);
@@ -90,6 +97,22 @@ public class PhoneActivity extends ActionBarActivity implements
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_phone);
 
+        Button b = ((Button) findViewById(R.id.button));
+        final TextView label = ((TextView) findViewById(R.id.label));
+        b.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                long _lowerGuess = lowerGuess;
+                long _upperGuess = upperGuess;
+                long _lastResponse = lastResponse;
+
+                long estimate = (_lowerGuess + _upperGuess) / 2;
+                label.setText("Estimated anchor: " + _lastResponse + " @ " + estimate
+                        + ", Error bounds: " + _lowerGuess + " ... " + _upperGuess + " (magnitude "
+                        + (_upperGuess - _lowerGuess) + ")");
+            }
+        });
+
         googleApiClient = new GoogleApiClient.Builder(this)
                 .addConnectionCallbacks(this)
                 .addOnConnectionFailedListener(this)
@@ -105,6 +128,10 @@ public class PhoneActivity extends ActionBarActivity implements
         super.onResume();
 
         googleApiClient.connect();
+
+        lastResponse = -1;
+        lowerGuess = -1;
+        upperGuess = -1;
 
         watchNode = null;
     }
@@ -162,7 +189,7 @@ public class PhoneActivity extends ActionBarActivity implements
 
     @Override
     public void onMessageReceived(MessageEvent messageEvent) {
-        long received = SystemClock.elapsedRealtime() - baseline;
+        long received = SystemClock.elapsedRealtime();
         if (messageEvent.getPath().equalsIgnoreCase(ProtocolConstants.PONG_PATH)) {
             byte[] data = messageEvent.getData();
 
@@ -171,17 +198,34 @@ public class PhoneActivity extends ActionBarActivity implements
                 packetBuffer.put(data);
                 packetBuffer.rewind();
 
-                pings.add(new PingPacket(packetBuffer.getInt(),
-                        packetBuffer.getLong(), packetBuffer.getLong(),
-                        packetBuffer.getLong(), received));
-            }
-        }
+                int number = packetBuffer.getInt();
+                long reqSend = packetBuffer.getLong();
+                long reqRecv = packetBuffer.getLong();
+                long resSend = packetBuffer.getLong();
+                long resRecv = received;
 
-        if (pings.size() % 50 == 0) {
-            Log.v("PhoneActivity", "packets right now: ");
-            List<PingPacket> pings2 = Collections.unmodifiableList(pings);
-            for (PingPacket p : pings2) {
-                Log.v("PhoneActivity", p.toString());
+                // adjust request send time
+                long lower = reqSend + (resSend - reqRecv);
+                long upper = resRecv;
+
+                if (lastResponse == -1) {
+                    lastResponse = resSend;
+                    lowerGuess = lower;
+                    upperGuess = upper;
+                } else {
+                    // assume no skew
+                    long delta = resSend - lastResponse;
+                    lastResponse = resSend;
+                    lowerGuess += delta;
+                    upperGuess += delta;
+
+                    if (lower > lowerGuess) {
+                        lowerGuess = lower;
+                    }
+                    if (upper < upperGuess) {
+                        upperGuess = upper;
+                    }
+                }
             }
         }
     }

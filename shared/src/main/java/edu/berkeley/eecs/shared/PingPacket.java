@@ -29,8 +29,9 @@ public class PingPacket {
     @Override
     public String toString() {
         StringBuilder builder = new StringBuilder("packet ");
-        builder.append(packetNumber).append(": (").append(requestSend).append(", ").append(requestReceive)
-                .append("), ").append("(").append(responseSend).append(", ").append(responseReceive).append(")");
+        builder.append('-').append(": (")
+                .append(requestSend).append(", ").append(requestReceive)
+                .append("), ").append("(").append(responseSend).append(", ").append(responseReceive).append("),");
         return builder.toString();
     }
 }
