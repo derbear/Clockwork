@@ -1,10 +1,13 @@
 package edu.berkeley.eecs.clockwork;
 
 import android.app.Activity;
+import android.content.Intent;
 import android.os.Bundle;
 import android.os.SystemClock;
 import android.support.wearable.view.WatchViewStub;
 import android.util.Log;
+import android.view.View;
+import android.widget.Button;
 import android.widget.TextView;
 
 import com.google.android.gms.common.ConnectionResult;
@@ -21,10 +24,7 @@ import java.nio.ByteBuffer;
 
 import edu.berkeley.eecs.shared.ProtocolConstants;
 
-public class WatchActivity extends Activity implements
-        MessageApi.MessageListener,
-        GoogleApiClient.ConnectionCallbacks,
-        GoogleApiClient.OnConnectionFailedListener {
+public class WatchActivity extends Activity {
 
     private TextView mTextView;
 
@@ -37,75 +37,24 @@ public class WatchActivity extends Activity implements
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_watch);
-        final WatchViewStub stub = (WatchViewStub) findViewById(R.id.watch_view_stub);
-        stub.setOnLayoutInflatedListener(new WatchViewStub.OnLayoutInflatedListener() {
+
+        // service toggle button incantations
+        final Button button = (Button) findViewById(R.id.button);
+        final Intent serviceIntent = new Intent(this, ClockworkPongService.class);
+        button.setOnClickListener(new View.OnClickListener() {
             @Override
-            public void onLayoutInflated(WatchViewStub stub) {
-                mTextView = (TextView) stub.findViewById(R.id.text);
+            public void onClick(View v) {
+                if (!ClockworkPongService.running) {
+                    startService(serviceIntent);
+                    button.setText("Stop service");
+                } else {
+                    stopService(serviceIntent);
+                    button.setText("Start service");
+                }
             }
         });
-
-        googleApiClient = new GoogleApiClient.Builder(this)
-                .addConnectionCallbacks(this)
-                .addOnConnectionFailedListener(this)
-                .addApi(Wearable.API)
-                .build();
-
-        packetBuffer = ByteBuffer.allocate(ProtocolConstants.PING_SIZE);
-    }
-
-    @Override
-    protected void onResume() {
-        super.onResume();
-
-        googleApiClient.connect();
-    }
-
-    @Override
-    protected void onPause() {
-        super.onPause();
-
-        Wearable.MessageApi.removeListener(googleApiClient, this);
-        googleApiClient.disconnect();
-    }
-
-    @Override
-    public void onConnected(Bundle bundle) {
-        Wearable.MessageApi.addListener(googleApiClient, this);
-    }
-
-    @Override
-    public void onConnectionSuspended(int i) {
-
-    }
-
-    @Override
-    public void onConnectionFailed(ConnectionResult connectionResult) {
-
-    }
-
-    @Override
-    public void onMessageReceived(MessageEvent messageEvent) {
-        long received = SystemClock.elapsedRealtime() - baseline;
-
-        if (messageEvent.getPath().equalsIgnoreCase(ProtocolConstants.PING_PATH)) {
-            synchronized (packetBuffer) {
-                // read data
-                byte[] data = messageEvent.getData();
-                packetBuffer.clear();
-                packetBuffer.put(data);
-                packetBuffer.rewind();
-                packetBuffer.getInt(); // packet number
-                packetBuffer.getLong(); // request send time
-                packetBuffer.putLong(received);
-
-                // send packet while setting response send time
-                long send = SystemClock.elapsedRealtime() - baseline;
-                packetBuffer.putLong(send);
-
-                Wearable.MessageApi.sendMessage(googleApiClient, messageEvent.getSourceNodeId(),
-                        ProtocolConstants.PONG_PATH, packetBuffer.array());
-            }
+        if (ClockworkPongService.running) {
+            button.setText("Stop service");
         }
     }
 }
