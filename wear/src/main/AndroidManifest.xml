@@ -9,7 +9,13 @@
         android:icon="@mipmap/ic_launcher"
         android:label="@string/app_name"
         android:theme="@android:style/Theme.DeviceDefault" >
-        <service android:name=".ClockworkPongService" />
+        <service
+            android:name=".ClockworkPongService"
+            android:exported="true" >
+            <intent-filter>
+                <action android:name="edu.berkeley.eecs.clockwork.ClockworkPongService" />
+            </intent-filter>
+        </service>
         <activity
             android:name=".WatchActivity"
             android:label="@string/app_name" >
